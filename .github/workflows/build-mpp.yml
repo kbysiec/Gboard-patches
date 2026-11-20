@@ -1,0 +1,37 @@
+name: Manual Build MPP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Patches (.mpp)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Build MPP Bundle
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.MORPHE_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+        run: ./gradlew :patches:buildAndroid generatePatchesList
+
+      - name: Upload MPP Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gboard-patches-mpp
+          path: patches/build/libs/*.mpp
+          if-no-files-found: error
