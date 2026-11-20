@@ -822,6 +822,13 @@ public final class ClipboardSyncWebPortal {
         writeResponse(socket, 200, "OK", "application/json; charset=utf-8", ackJson);
     }
 
+    private void broadcastEvent(String event, String data) {
+        String frame = buildSseFrame(event, data);
+        List<EventClient> clients = snapshotEventClients();
+        List<EventClient> failedClients = writeFrameToClients(clients, frame, event);
+        removeFailedEventClients(failedClients);
+    }
+
     private long publishWebImage(byte[] bytes, String mimeType, String senderLabel, String clientId) {
         long now = System.currentTimeMillis();
         latestPhoneImageBytes = bytes;
