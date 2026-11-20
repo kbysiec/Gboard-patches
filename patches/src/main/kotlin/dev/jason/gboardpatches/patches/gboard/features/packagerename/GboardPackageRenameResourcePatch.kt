@@ -281,12 +281,6 @@ internal val GBOARD_PACKAGE_RENAME_MAPPINGS = listOf(
         "$GBOARD_PACKAGE_NAME.mlkitinitprovider",
         "$GBOARD_PATCHED_PACKAGE_NAME.mlkitinitprovider",
     ),
-    androidMapping(
-        "provider",
-        "authorities",
-        "$GBOARD_PACKAGE_NAME.webclipboard.provider",
-        "$GBOARD_PATCHED_PACKAGE_NAME.webclipboard.provider",
-    ),
 )
 
 internal fun applyGboardPackageRename(

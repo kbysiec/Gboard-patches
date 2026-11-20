@@ -136,3 +136,6 @@ local.properties
 # Local Python caches
 __pycache__/
 *.py[cod]
+
+.history/
+GboardSync.app/
