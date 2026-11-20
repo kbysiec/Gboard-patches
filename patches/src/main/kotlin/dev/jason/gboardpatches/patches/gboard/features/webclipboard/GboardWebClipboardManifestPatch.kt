@@ -110,6 +110,18 @@ internal fun applyGboardWebClipboardManifest(document: Document) {
         WEB_CLIPBOARD_PACKAGE_REPLACED_RECEIVER_CLASS,
     ).apply { setManifestAndroidAttribute("exported", "false") }
     ensureManifestIntentFilter(document, packageReplacedReceiver, ACTION_MY_PACKAGE_REPLACED)
+
+    val packageName = manifest.getAttribute("package")
+    ensureManifestComponent(
+        document,
+        application,
+        "provider",
+        WEB_CLIPBOARD_FILE_PROVIDER_CLASS,
+    ).apply {
+        setManifestAndroidAttribute("authorities", packageName + WEB_CLIPBOARD_PROVIDER_SUFFIX)
+        setManifestAndroidAttribute("exported", "false")
+        setManifestAndroidAttribute("grantUriPermissions", "true")
+    }
 }
 
 context(context: ResourcePatchContext)
@@ -141,6 +153,9 @@ private const val WEB_CLIPBOARD_TILE_SERVICE_CLASS =
     "dev.jason.gboardpatches.extension.webclipboard.WebClipboardTileService"
 private const val WEB_CLIPBOARD_PACKAGE_REPLACED_RECEIVER_CLASS =
     "dev.jason.gboardpatches.extension.webclipboard.WebClipboardPackageReplacedReceiver"
+private const val WEB_CLIPBOARD_FILE_PROVIDER_CLASS =
+    "dev.jason.gboardpatches.extension.webclipboard.WebClipboardFileProvider"
+private const val WEB_CLIPBOARD_PROVIDER_SUFFIX = ".webclipboard.provider"
 private const val ACTION_QS_TILE = "android.service.quicksettings.action.QS_TILE"
 private const val ACTION_QS_TILE_PREFERENCES =
     "android.service.quicksettings.action.QS_TILE_PREFERENCES"
