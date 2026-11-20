@@ -6,17 +6,24 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.SystemClock;
 import android.util.Log;
 import android.widget.Toast;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -306,7 +313,16 @@ public final class ClipboardSyncService extends Service {
             String loopbackIngressToken) {
         ClipboardSyncWebPortal portal = new ClipboardSyncWebPortal(
                 port,
-                this::applyWebClipboardToPhone,
+                new ClipboardSyncWebPortal.ClipboardBridge() {
+                    @Override
+                    public void applyDesktopClipboard(String text) {
+                        applyWebClipboardToPhone(text);
+                    }
+                    @Override
+                    public void applyDesktopImage(byte[] imageBytes, String mimeType) {
+                        applyWebImageToPhone(imageBytes, mimeType);
+                    }
+                },
                 ClipboardSyncWebPortal.WebAssets.from(this),
                 new ClipboardSyncWebPortal.SecurityConfig(
                         pairingRequired,
@@ -373,6 +389,23 @@ public final class ClipboardSyncService extends Service {
             return;
         }
         ClipboardManager.OnPrimaryClipChangedListener listener = () -> {
+            try {
+                if (clipboardManager.hasPrimaryClip()) {
+                    ClipData clipData = clipboardManager.getPrimaryClip();
+                    if (clipData != null && clipData.getItemCount() > 0) {
+                        ClipDescription desc = clipData.getDescription();
+                        if (desc != null && (desc.hasMimeType("image/png") || desc.hasMimeType("image/jpeg") || desc.hasMimeType("image/*"))) {
+                            Uri uri = clipData.getItemAt(0).getUri();
+                            if (uri != null) {
+                                handlePhoneImageClip(uri, desc);
+                                return;
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Error checking primary clip for image", t);
+            }
             CharSequence currentText = currentClipboardText(clipboardManager);
             if (currentText != null) {
                 Log.i(TAG, LOG_PREFIX + " service clipboard listener fired"
@@ -388,6 +421,48 @@ public final class ClipboardSyncService extends Service {
         } catch (Throwable throwable) {
             Log.w(TAG, "Failed to register clipboard listener", throwable);
         }
+    }
+
+    private void handlePhoneImageClip(Uri uri, ClipDescription desc) {
+        clipboardPublishExecutor.execute(() -> {
+            try {
+                byte[] bytes;
+                try (InputStream is = getContentResolver().openInputStream(uri)) {
+                    if (is == null) {
+                        return;
+                    }
+                    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                    byte[] data = new byte[8192];
+                    int nRead;
+                    while ((nRead = is.read(data, 0, data.length)) != -1) {
+                        buffer.write(data, 0, nRead);
+                        if (buffer.size() > 16 * 1024 * 1024) {
+                            break;
+                        }
+                    }
+                    bytes = buffer.toByteArray();
+                }
+                if (bytes.length == 0) {
+                    return;
+                }
+                String hash = sha256Hex(bytes);
+                if (webClipboardEchoSuppressor.shouldSuppressClipboardEvent("IMAGE_HASH:" + hash, SystemClock.elapsedRealtime())) {
+                    Log.i(TAG, LOG_PREFIX + " service clipboard listener suppressed web echo image len=" + bytes.length);
+                    return;
+                }
+                String mimeType = "image/png";
+                if (desc != null && desc.hasMimeType("image/jpeg")) {
+                    mimeType = "image/jpeg";
+                }
+                ClipboardSyncWebPortal portal = webPortal;
+                if (portal != null) {
+                    portal.publishPhoneImage(bytes, mimeType);
+                    Log.i(TAG, LOG_PREFIX + " published phone image to portal len=" + bytes.length);
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to read image from clipboard URI: " + uri, t);
+            }
+        });
     }
 
     private void unregisterClipboardListener() {
@@ -425,6 +500,55 @@ public final class ClipboardSyncService extends Service {
             return;
         }
         updateNotification("Clipboard applied from Web");
+    }
+
+    private void applyWebImageToPhone(byte[] bytes, String mimeType) {
+        if (bytes == null || bytes.length == 0) {
+            return;
+        }
+        ClipboardManager clipboardManager = serviceClipboardManager;
+        if (clipboardManager == null) {
+            clipboardManager = getSystemService(ClipboardManager.class);
+        }
+        if (clipboardManager == null) {
+            return;
+        }
+        try {
+            String extension = (mimeType != null && (mimeType.contains("jpeg") || mimeType.contains("jpg"))) ? ".jpg" : ".png";
+            String filename = "incoming_" + System.currentTimeMillis() + extension;
+            WebClipboardFileProvider.saveImageFile(this, filename, bytes);
+            Uri uri = WebClipboardFileProvider.getUriForFile(this, filename);
+
+            String hash = sha256Hex(bytes);
+            webClipboardEchoSuppressor.markWebApplied("IMAGE_HASH:" + hash, SystemClock.elapsedRealtime());
+
+            ClipDescription desc = new ClipDescription(
+                    ClipboardSyncIngressContract.WEB_CLIPBOARD_LABEL,
+                    new String[]{mimeType != null ? mimeType : "image/png"}
+            );
+            ClipData clip = new ClipData(desc, new ClipData.Item(uri));
+            clipboardManager.setPrimaryClip(clip);
+            updateNotification("Image applied from Web");
+            Log.i(TAG, LOG_PREFIX + " applied web image to phone: " + filename + " len=" + bytes.length);
+        } catch (Throwable throwable) {
+            webClipboardEchoSuppressor.clearWebApplied();
+            Log.w(TAG, "Failed to apply web image to phone", throwable);
+        }
+    }
+
+    private static String sha256Hex(byte[] input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(input);
+            StringBuilder builder = new StringBuilder(bytes.length * 2);
+            for (byte current : bytes) {
+                builder.append(Character.forDigit((current >> 4) & 0xF, 16));
+                builder.append(Character.forDigit(current & 0xF, 16));
+            }
+            return builder.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            return Integer.toHexString(Arrays.hashCode(input));
+        }
     }
 
     private void publishClipboardToPortalIfNotWebEcho(String text) {
