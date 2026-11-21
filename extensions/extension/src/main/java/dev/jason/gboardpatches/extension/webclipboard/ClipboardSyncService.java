@@ -13,6 +13,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -327,6 +328,10 @@ public final class ClipboardSyncService extends Service {
                     public void applyDesktopImage(byte[] imageBytes, String mimeType) {
                         applyWebImageToPhone(imageBytes, mimeType);
                     }
+                    @Override
+                    public void applyDesktopFile(byte[] fileBytes, String filename, String mimeType) {
+                        applyWebFileToPhone(fileBytes, filename, mimeType);
+                    }
                 },
                 ClipboardSyncWebPortal.WebAssets.from(this),
                 new ClipboardSyncWebPortal.SecurityConfig(
@@ -420,6 +425,9 @@ public final class ClipboardSyncService extends Service {
                             if (detectedMime != null && detectedMime.toLowerCase(Locale.US).startsWith("image/")) {
                                 handlePhoneImageClip(uri, detectedMime);
                                 return;
+                            } else {
+                                handlePhoneFileClip(uri, detectedMime);
+                                return;
                             }
                         }
                     }
@@ -486,6 +494,65 @@ public final class ClipboardSyncService extends Service {
                 Log.w(TAG, "Failed to read image from clipboard URI: " + uri, t);
             }
         });
+    }
+
+    private void handlePhoneFileClip(Uri uri, String resolvedMimeType) {
+        clipboardPublishExecutor.execute(() -> {
+            try {
+                String filename = resolveFilenameFromUri(uri);
+                byte[] bytes;
+                try (InputStream is = getContentResolver().openInputStream(uri)) {
+                    if (is == null) {
+                        return;
+                    }
+                    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                    byte[] data = new byte[8192];
+                    int nRead;
+                    while ((nRead = is.read(data, 0, data.length)) != -1) {
+                        buffer.write(data, 0, nRead);
+                        if (buffer.size() > 50 * 1024 * 1024) { // 50MB limit
+                            break;
+                        }
+                    }
+                    bytes = buffer.toByteArray();
+                }
+                if (bytes.length == 0) {
+                    return;
+                }
+                String hash = sha256Hex(bytes);
+                if (webClipboardEchoSuppressor.shouldSuppressClipboardEvent("FILE_HASH:" + hash, SystemClock.elapsedRealtime())) {
+                    return;
+                }
+                ClipboardSyncWebPortal portal = webPortal;
+                if (portal != null) {
+                    portal.publishPhoneFile(bytes, filename,
+                            resolvedMimeType != null && !resolvedMimeType.isBlank()
+                                    ? resolvedMimeType : "application/octet-stream");
+                    Log.i(TAG, LOG_PREFIX + " published phone file to portal: " + filename + " len=" + bytes.length);
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to read file from clipboard URI: " + uri, t);
+            }
+        });
+    }
+
+    private String resolveFilenameFromUri(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (nameIndex >= 0) {
+                    String name = cursor.getString(nameIndex);
+                    if (name != null && !name.isBlank()) {
+                        return name;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        String lastSegment = uri.getLastPathSegment();
+        if (lastSegment != null && !lastSegment.isBlank()) {
+            return lastSegment;
+        }
+        return "file_" + System.currentTimeMillis();
     }
 
     private void unregisterClipboardListener() {
@@ -592,6 +659,112 @@ public final class ClipboardSyncService extends Service {
             Log.w(TAG, "Failed to save image to MediaStore", t);
         }
         return null;
+    }
+
+    private void applyWebFileToPhone(byte[] bytes, String filename, String mimeType) {
+        if (bytes == null || bytes.length == 0 || filename == null || filename.isBlank()) {
+            return;
+        }
+        try {
+            String hash = sha256Hex(bytes);
+            webClipboardEchoSuppressor.markWebApplied("FILE_HASH:" + hash, SystemClock.elapsedRealtime());
+
+            Uri uri = saveFileToDownloads(bytes, filename, mimeType);
+            if (uri == null) {
+                WebClipboardFileProvider.saveImageFile(this, filename, bytes);
+                uri = WebClipboardFileProvider.getUriForFile(this, filename);
+            }
+
+            ClipboardManager clipboardManager = serviceClipboardManager != null
+                    ? serviceClipboardManager : getSystemService(ClipboardManager.class);
+            if (clipboardManager != null && uri != null) {
+                ClipDescription desc = new ClipDescription(
+                        ClipboardSyncIngressContract.WEB_CLIPBOARD_LABEL,
+                        new String[]{mimeType != null && !mimeType.isBlank() ? mimeType : "application/octet-stream"}
+                );
+                ClipData clip = new ClipData(desc, new ClipData.Item(uri));
+                clipboardManager.setPrimaryClip(clip);
+            }
+
+            showFileReceivedNotification(filename, uri, mimeType);
+            Log.i(TAG, LOG_PREFIX + " applied web file to phone: " + filename + " len=" + bytes.length + " uri=" + uri);
+        } catch (Throwable throwable) {
+            webClipboardEchoSuppressor.clearWebApplied();
+            Log.w(TAG, "Failed to apply web file to phone", throwable);
+        }
+    }
+
+    private Uri saveFileToDownloads(byte[] bytes, String filename, String mimeType) {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Downloads.DISPLAY_NAME, filename);
+            if (mimeType != null && !mimeType.isBlank()) {
+                values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/WebClipboard");
+                values.put(MediaStore.Downloads.IS_PENDING, 1);
+            }
+            Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri != null) {
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (out != null) {
+                        out.write(bytes);
+                        out.flush();
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.clear();
+                    values.put(MediaStore.Downloads.IS_PENDING, 0);
+                    getContentResolver().update(uri, values, null, null);
+                }
+                Log.i(TAG, LOG_PREFIX + " saved file to Downloads MediaStore: " + uri);
+                return uri;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to save file to MediaStore Downloads", t);
+        }
+        return null;
+    }
+
+    private void showFileReceivedNotification(String filename, Uri fileUri, String mimeType) {
+        try {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm == null) {
+                return;
+            }
+            ensureNotificationChannel();
+
+            Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+            viewIntent.setDataAndType(fileUri, mimeType != null && !mimeType.isBlank() ? mimeType : "*/*");
+            viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            PendingIntent pi = PendingIntent.getActivity(
+                    this,
+                    (int) System.currentTimeMillis(),
+                    viewIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
+            );
+
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, NOTIFICATION_CHANNEL_ID);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            Notification notification = builder
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentTitle("Otrzymano plik z Maca")
+                    .setContentText(filename)
+                    .setContentIntent(pi)
+                    .setAutoCancel(true)
+                    .build();
+
+            nm.notify(NOTIFICATION_ID + 1, notification);
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to show file notification", t);
+        }
     }
 
     private static String sha256Hex(byte[] input) {

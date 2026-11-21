@@ -64,6 +64,10 @@ public final class ClipboardSyncWebPortal {
     private volatile byte[] latestPhoneImageBytes = null;
     private volatile String latestPhoneImageMimeType = "image/png";
     private volatile long latestPhoneImageAtMs = 0L;
+    private volatile byte[] latestPhoneFileBytes = null;
+    private volatile String latestPhoneFilename = "";
+    private volatile String latestPhoneFileMimeType = "application/octet-stream";
+    private volatile long latestPhoneFileAtMs = 0L;
     private volatile String latestWebClipboardText = "";
     private volatile long latestWebClipboardAtMs;
     private long nextEventClientId = 1L;
@@ -98,6 +102,7 @@ public final class ClipboardSyncWebPortal {
     interface ClipboardBridge {
         void applyDesktopClipboard(String text);
         default void applyDesktopImage(byte[] imageBytes, String mimeType) {}
+        default void applyDesktopFile(byte[] fileBytes, String filename, String mimeType) {}
     }
 
     interface WebAssets {
@@ -580,6 +585,10 @@ public final class ClipboardSyncWebPortal {
                 handleClipboardImageGet(socket, request);
                 return;
             }
+            if ("GET".equals(request.method) && "/clipboard/file".equals(request.path)) {
+                handleClipboardFileGet(socket, request);
+                return;
+            }
             if ("GET".equals(request.method) && "/clients".equals(request.path)) {
                 synchronized (clientsLock) {
                     writeResponse(socket, 200, "OK", "application/json; charset=utf-8",
@@ -593,6 +602,10 @@ public final class ClipboardSyncWebPortal {
             }
             if ("POST".equals(request.method) && "/clipboard/image".equals(request.path)) {
                 handleClipboardImagePost(socket, request);
+                return;
+            }
+            if ("POST".equals(request.method) && "/clipboard/file".equals(request.path)) {
+                handleClipboardFilePost(socket, request);
                 return;
             }
             if ("POST".equals(request.method) && "/clients/kick".equals(request.path)) {
@@ -850,6 +863,106 @@ public final class ClipboardSyncWebPortal {
         return now;
     }
 
+    private void handleClipboardFileGet(Socket socket, Request request) throws Exception {
+        byte[] bytes = latestPhoneFileBytes;
+        if (bytes == null || bytes.length == 0) {
+            writeResponse(socket, 404, "Not Found", "application/json; charset=utf-8",
+                    "{\"ok\":false,\"error\":\"no_file\"}");
+            return;
+        }
+        String mime = latestPhoneFileMimeType != null ? latestPhoneFileMimeType : "application/octet-stream";
+        String filename = latestPhoneFilename != null && !latestPhoneFilename.isBlank() ? latestPhoneFilename : "file";
+        Map<String, String> extra = new HashMap<>();
+        extra.put("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+        extra.put("X-Filename", filename);
+        writeResponse(socket, 200, "OK", mime, bytes, extra);
+    }
+
+    private void handleClipboardFilePost(Socket socket, Request request) throws Exception {
+        byte[] bytes = request.bodyBytes;
+        if (bytes == null || bytes.length == 0) {
+            writeResponse(socket, 400, "Bad Request", "application/json; charset=utf-8",
+                    "{\"ok\":false,\"error\":\"empty_file\"}");
+            return;
+        }
+        String mime = request.header("content-type");
+        if (mime == null || mime.isBlank()) {
+            mime = "application/octet-stream";
+        }
+        String filename = request.header("x-filename");
+        if (filename == null || filename.isBlank()) {
+            filename = request.query("filename");
+        }
+        if (filename == null || filename.isBlank()) {
+            filename = "file_" + System.currentTimeMillis();
+        }
+        try {
+            filename = URLDecoder.decode(filename, StandardCharsets.UTF_8.name());
+        } catch (Throwable ignored) {}
+        filename = new java.io.File(filename).getName(); // prevent path traversal
+
+        String clientId = sanitizeClientId(request.header("x-client-id"));
+        if (clientId.isBlank()) {
+            clientId = sanitizeClientId(request.query("clientId"));
+        }
+        try {
+            bridge.applyDesktopFile(bytes, filename, mime);
+        } catch (Throwable throwable) {
+            writeResponse(socket, 500, "Internal Server Error", "application/json; charset=utf-8",
+                    buildAckJson(false, "", clientId, "failed", 0L, "apply_failed"));
+            return;
+        }
+        long appliedAtMs = publishWebFile(bytes, filename, mime, senderLabelFor(socket), clientId);
+        String ackJson = buildAckJson(true, "", clientId, "applied", appliedAtMs, "");
+        broadcastAckEvent(ackJson);
+        writeResponse(socket, 200, "OK", "application/json; charset=utf-8", ackJson);
+    }
+
+    private long publishWebFile(byte[] bytes, String filename, String mimeType, String senderLabel, String clientId) {
+        long now = System.currentTimeMillis();
+        latestPhoneFileBytes = bytes;
+        latestPhoneFilename = filename;
+        latestPhoneFileMimeType = mimeType;
+        latestPhoneFileAtMs = now;
+        JSONObject payload = new JSONObject();
+        try {
+            payload.put("type", "file");
+            payload.put("filename", filename);
+            payload.put("mimeType", mimeType);
+            payload.put("fileUrl", "/clipboard/file");
+            payload.put("fileSize", bytes.length);
+            payload.put("updatedAtMs", now);
+            payload.put("source", "web");
+            payload.put("senderLabel", senderLabel != null ? senderLabel : "Web");
+            if (clientId != null && !clientId.isBlank()) {
+                payload.put("clientId", clientId);
+            }
+        } catch (Throwable ignored) {}
+        broadcastEvent("clipboard", payload.toString());
+        return now;
+    }
+
+    public long publishPhoneFile(byte[] bytes, String filename, String mimeType) {
+        long now = System.currentTimeMillis();
+        latestPhoneFileBytes = bytes;
+        latestPhoneFilename = filename;
+        latestPhoneFileMimeType = mimeType;
+        latestPhoneFileAtMs = now;
+        JSONObject payload = new JSONObject();
+        try {
+            payload.put("type", "file");
+            payload.put("filename", filename);
+            payload.put("mimeType", mimeType);
+            payload.put("fileUrl", "/clipboard/file");
+            payload.put("fileSize", bytes.length);
+            payload.put("updatedAtMs", now);
+            payload.put("source", "phone");
+            payload.put("senderLabel", "Phone");
+        } catch (Throwable ignored) {}
+        broadcastEvent("clipboard", payload.toString());
+        return now;
+    }
+
     public long publishPhoneImage(byte[] bytes, String mimeType) {
         long now = System.currentTimeMillis();
         latestPhoneImageBytes = bytes;
@@ -860,6 +973,106 @@ public final class ClipboardSyncWebPortal {
             payload.put("type", "image");
             payload.put("mimeType", mimeType);
             payload.put("imageUrl", "/clipboard/image");
+            payload.put("updatedAtMs", now);
+            payload.put("source", "phone");
+            payload.put("senderLabel", "Phone");
+        } catch (Throwable ignored) {}
+        broadcastEvent("clipboard", payload.toString());
+        return now;
+    }
+
+    private void handleClipboardFileGet(Socket socket, Request request) throws Exception {
+        byte[] bytes = latestPhoneFileBytes;
+        if (bytes == null || bytes.length == 0) {
+            writeResponse(socket, 404, "Not Found", "application/json; charset=utf-8",
+                    "{\"ok\":false,\"error\":\"no_file\"}");
+            return;
+        }
+        String mime = latestPhoneFileMimeType != null ? latestPhoneFileMimeType : "application/octet-stream";
+        String filename = latestPhoneFilename != null && !latestPhoneFilename.isBlank() ? latestPhoneFilename : "file";
+        Map<String, String> extra = new HashMap<>();
+        extra.put("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+        extra.put("X-Filename", filename);
+        writeResponse(socket, 200, "OK", mime, bytes, extra);
+    }
+
+    private void handleClipboardFilePost(Socket socket, Request request) throws Exception {
+        byte[] bytes = request.bodyBytes;
+        if (bytes == null || bytes.length == 0) {
+            writeResponse(socket, 400, "Bad Request", "application/json; charset=utf-8",
+                    "{\"ok\":false,\"error\":\"empty_file\"}");
+            return;
+        }
+        String mime = request.header("content-type");
+        if (mime == null || mime.isBlank()) {
+            mime = "application/octet-stream";
+        }
+        String filename = request.header("x-filename");
+        if (filename == null || filename.isBlank()) {
+            filename = request.query("filename");
+        }
+        if (filename == null || filename.isBlank()) {
+            filename = "file_" + System.currentTimeMillis();
+        }
+        try {
+            filename = URLDecoder.decode(filename, StandardCharsets.UTF_8.name());
+        } catch (Throwable ignored) {}
+        filename = new java.io.File(filename).getName(); // prevent path traversal
+
+        String clientId = sanitizeClientId(request.header("x-client-id"));
+        if (clientId.isBlank()) {
+            clientId = sanitizeClientId(request.query("clientId"));
+        }
+        try {
+            bridge.applyDesktopFile(bytes, filename, mime);
+        } catch (Throwable throwable) {
+            writeResponse(socket, 500, "Internal Server Error", "application/json; charset=utf-8",
+                    buildAckJson(false, "", clientId, "failed", 0L, "apply_failed"));
+            return;
+        }
+        long appliedAtMs = publishWebFile(bytes, filename, mime, senderLabelFor(socket), clientId);
+        String ackJson = buildAckJson(true, "", clientId, "applied", appliedAtMs, "");
+        broadcastAckEvent(ackJson);
+        writeResponse(socket, 200, "OK", "application/json; charset=utf-8", ackJson);
+    }
+
+    private long publishWebFile(byte[] bytes, String filename, String mimeType, String senderLabel, String clientId) {
+        long now = System.currentTimeMillis();
+        latestPhoneFileBytes = bytes;
+        latestPhoneFilename = filename;
+        latestPhoneFileMimeType = mimeType;
+        latestPhoneFileAtMs = now;
+        JSONObject payload = new JSONObject();
+        try {
+            payload.put("type", "file");
+            payload.put("filename", filename);
+            payload.put("mimeType", mimeType);
+            payload.put("fileUrl", "/clipboard/file");
+            payload.put("fileSize", bytes.length);
+            payload.put("updatedAtMs", now);
+            payload.put("source", "web");
+            payload.put("senderLabel", senderLabel != null ? senderLabel : "Web");
+            if (clientId != null && !clientId.isBlank()) {
+                payload.put("clientId", clientId);
+            }
+        } catch (Throwable ignored) {}
+        broadcastEvent("clipboard", payload.toString());
+        return now;
+    }
+
+    public long publishPhoneFile(byte[] bytes, String filename, String mimeType) {
+        long now = System.currentTimeMillis();
+        latestPhoneFileBytes = bytes;
+        latestPhoneFilename = filename;
+        latestPhoneFileMimeType = mimeType;
+        latestPhoneFileAtMs = now;
+        JSONObject payload = new JSONObject();
+        try {
+            payload.put("type", "file");
+            payload.put("filename", filename);
+            payload.put("mimeType", mimeType);
+            payload.put("fileUrl", "/clipboard/file");
+            payload.put("fileSize", bytes.length);
             payload.put("updatedAtMs", now);
             payload.put("source", "phone");
             payload.put("senderLabel", "Phone");
@@ -913,6 +1126,14 @@ public final class ClipboardSyncWebPortal {
                 payload.put("imageUpdatedAtMs", latestPhoneImageAtMs);
                 payload.put("imageMimeType", latestPhoneImageMimeType);
             }
+            if (latestPhoneFileBytes != null && latestPhoneFileBytes.length > 0) {
+                payload.put("hasFile", true);
+                payload.put("fileUrl", "/clipboard/file");
+                payload.put("filename", latestPhoneFilename != null ? latestPhoneFilename : "file");
+                payload.put("fileUpdatedAtMs", latestPhoneFileAtMs);
+                payload.put("fileMimeType", latestPhoneFileMimeType != null ? latestPhoneFileMimeType : "application/octet-stream");
+                payload.put("fileSize", latestPhoneFileBytes.length);
+            }
         } catch (Throwable ignored) {
             return "{\"text\":\"\",\"updatedAtMs\":0}";
         }
@@ -928,6 +1149,7 @@ public final class ClipboardSyncWebPortal {
                 || "/state".equals(request.path)
                 || "/clipboard".equals(request.path)
                 || "/clipboard/image".equals(request.path)
+                || "/clipboard/file".equals(request.path)
                 || "/clients".equals(request.path)
                 || "/clients/kick".equals(request.path);
     }
@@ -1332,6 +1554,29 @@ public final class ClipboardSyncWebPortal {
         writer.write("Pragma: no-cache\r\n");
         writer.write("Expires: 0\r\n");
         writer.write("Connection: close\r\n");
+        writer.write("\r\n");
+        writer.flush();
+        socket.getOutputStream().write(bytes);
+        socket.getOutputStream().flush();
+        closeQuietly(socket);
+    }
+
+    private void writeResponse(Socket socket, int status, String reason, String contentType,
+            byte[] bytes, Map<String, String> extraHeaders) throws Exception {
+        BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                socket.getOutputStream(), StandardCharsets.UTF_8));
+        writer.write("HTTP/1.1 " + status + " " + reason + "\r\n");
+        writer.write("Content-Type: " + contentType + "\r\n");
+        writer.write("Content-Length: " + bytes.length + "\r\n");
+        writer.write("Cache-Control: no-store\r\n");
+        writer.write("Pragma: no-cache\r\n");
+        writer.write("Expires: 0\r\n");
+        writer.write("Connection: close\r\n");
+        if (extraHeaders != null) {
+            for (Map.Entry<String, String> entry : extraHeaders.entrySet()) {
+                writer.write(entry.getKey() + ": " + entry.getValue() + "\r\n");
+            }
+        }
         writer.write("\r\n");
         writer.flush();
         socket.getOutputStream().write(bytes);

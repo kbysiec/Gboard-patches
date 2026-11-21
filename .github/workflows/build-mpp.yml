@@ -42,9 +42,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.4.2
-          name: "v4.4.2 - Gboard Web Clipboard Image Sync"
-          body: "Release with MediaStore integration and bidirectional image sync for GboardWU and macOS."
+          tag_name: v4.5.0
+          name: "v4.5.0 - Gboard Web Clipboard File & Image Sync"
+          body: "Release with full bidirectional file and image sync for GboardWU and macOS."
           draft: false
           prerelease: false
           files: patches/build/libs/*.mpp
