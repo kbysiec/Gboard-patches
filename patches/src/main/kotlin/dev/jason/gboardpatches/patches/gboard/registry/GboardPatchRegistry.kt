@@ -644,8 +644,8 @@ val gboardClipboardContentLimitPatch = gboardPublicResourcePatch(
 @Suppress("unused")
 val gboardWebClipboardPatch = gboardPublicResourcePatch(
     featureId = "web_clipboard",
-    name = "Web Clipboard",
-    description = "新增手機自架的 Web Clipboard，支援瀏覽器同步、配對碼與快速設定開關\nAdd the phone-hosted Web Clipboard with browser sync, pairing, and a Quick Settings Tile.",
+    name = "Web Clipboard (Image Sync)",
+    description = "新增手機自架的 Web Clipboard，支援瀏覽器同步、配對碼與快速設定開關\nAdd phone-hosted Web Clipboard with full text and bidirectional image sync.",
     default = true
 ) {
     compatibleWith(COMPATIBILITY_GBOARD)

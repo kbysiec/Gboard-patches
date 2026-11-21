@@ -393,11 +393,27 @@ public final class ClipboardSyncService extends Service {
                 if (clipboardManager.hasPrimaryClip()) {
                     ClipData clipData = clipboardManager.getPrimaryClip();
                     if (clipData != null && clipData.getItemCount() > 0) {
-                        ClipDescription desc = clipData.getDescription();
-                        if (desc != null && (desc.hasMimeType("image/png") || desc.hasMimeType("image/jpeg") || desc.hasMimeType("image/*"))) {
-                            Uri uri = clipData.getItemAt(0).getUri();
-                            if (uri != null) {
-                                handlePhoneImageClip(uri, desc);
+                        ClipData.Item item = clipData.getItemAt(0);
+                        Uri uri = item.getUri();
+                        if (uri != null) {
+                            ClipDescription desc = clipData.getDescription();
+                            String detectedMime = null;
+                            if (desc != null) {
+                                for (int i = 0; i < desc.getMimeTypeCount(); i++) {
+                                    String m = desc.getMimeType(i);
+                                    if (m != null && m.toLowerCase(Locale.US).startsWith("image/")) {
+                                        detectedMime = m;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (detectedMime == null) {
+                                try {
+                                    detectedMime = getContentResolver().getType(uri);
+                                } catch (Throwable ignored) {}
+                            }
+                            if (detectedMime != null && detectedMime.toLowerCase(Locale.US).startsWith("image/")) {
+                                handlePhoneImageClip(uri, detectedMime);
                                 return;
                             }
                         }
@@ -423,7 +439,7 @@ public final class ClipboardSyncService extends Service {
         }
     }
 
-    private void handlePhoneImageClip(Uri uri, ClipDescription desc) {
+    private void handlePhoneImageClip(Uri uri, String resolvedMimeType) {
         clipboardPublishExecutor.execute(() -> {
             try {
                 byte[] bytes;
@@ -451,13 +467,15 @@ public final class ClipboardSyncService extends Service {
                     return;
                 }
                 String mimeType = "image/png";
-                if (desc != null && desc.hasMimeType("image/jpeg")) {
+                if (resolvedMimeType != null && (resolvedMimeType.contains("jpeg") || resolvedMimeType.contains("jpg"))) {
                     mimeType = "image/jpeg";
+                } else if (resolvedMimeType != null && !resolvedMimeType.isBlank()) {
+                    mimeType = resolvedMimeType;
                 }
                 ClipboardSyncWebPortal portal = webPortal;
                 if (portal != null) {
                     portal.publishPhoneImage(bytes, mimeType);
-                    Log.i(TAG, LOG_PREFIX + " published phone image to portal len=" + bytes.length);
+                    Log.i(TAG, LOG_PREFIX + " published phone image to portal len=" + bytes.length + ", mime=" + mimeType);
                 }
             } catch (Throwable t) {
                 Log.w(TAG, "Failed to read image from clipboard URI: " + uri, t);
@@ -653,7 +671,17 @@ public final class ClipboardSyncService extends Service {
             if (clipData == null || clipData.getItemCount() <= 0) {
                 return null;
             }
-            return clipData.getItemAt(0).coerceToText(this);
+            ClipData.Item item = clipData.getItemAt(0);
+            CharSequence directText = item.getText();
+            if (directText != null && directText.length() > 0) {
+                return directText;
+            }
+            // Do NOT call coerceToText if it has a URI, because reading binary image files as text
+            // turns JPEG/PNG binary data into corrupted strings!
+            if (item.getUri() == null) {
+                return item.coerceToText(this);
+            }
+            return null;
         } catch (Throwable ignored) {
             return null;
         }

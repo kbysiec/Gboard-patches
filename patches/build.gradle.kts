@@ -238,6 +238,7 @@ tasks {
 
     val mppJar = named<Jar>("jar") {
         dependsOn(verifyGboardCapabilityWiring)
+        dependsOn(syncExtensionTasks)
     }
 
     named<Test>("test") {
