@@ -8,19 +8,23 @@ import android.app.Service;
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 import android.os.IBinder;
 import android.os.SystemClock;
+import android.provider.MediaStore;
 import android.util.Log;
 import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Locale;
@@ -534,25 +538,60 @@ public final class ClipboardSyncService extends Service {
         }
         try {
             String extension = (mimeType != null && (mimeType.contains("jpeg") || mimeType.contains("jpg"))) ? ".jpg" : ".png";
+            String resolvedMime = (mimeType != null && (mimeType.contains("jpeg") || mimeType.contains("jpg"))) ? "image/jpeg" : "image/png";
             String filename = "incoming_" + System.currentTimeMillis() + extension;
             WebClipboardFileProvider.saveImageFile(this, filename, bytes);
-            Uri uri = WebClipboardFileProvider.getUriForFile(this, filename);
+            Uri uri = saveToMediaStore(bytes, resolvedMime, filename);
+            if (uri == null) {
+                uri = WebClipboardFileProvider.getUriForFile(this, filename);
+            }
 
             String hash = sha256Hex(bytes);
             webClipboardEchoSuppressor.markWebApplied("IMAGE_HASH:" + hash, SystemClock.elapsedRealtime());
 
             ClipDescription desc = new ClipDescription(
                     ClipboardSyncIngressContract.WEB_CLIPBOARD_LABEL,
-                    new String[]{mimeType != null ? mimeType : "image/png"}
+                    new String[]{resolvedMime}
             );
             ClipData clip = new ClipData(desc, new ClipData.Item(uri));
             clipboardManager.setPrimaryClip(clip);
             updateNotification("Image applied from Web");
-            Log.i(TAG, LOG_PREFIX + " applied web image to phone: " + filename + " len=" + bytes.length);
+            Log.i(TAG, LOG_PREFIX + " applied web image to phone: " + filename + " len=" + bytes.length + " uri=" + uri);
         } catch (Throwable throwable) {
             webClipboardEchoSuppressor.clearWebApplied();
             Log.w(TAG, "Failed to apply web image to phone", throwable);
         }
+    }
+
+    private Uri saveToMediaStore(byte[] bytes, String mimeType, String filename) {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, filename);
+            values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/WebClipboard");
+                values.put(MediaStore.Images.Media.IS_PENDING, 1);
+            }
+            Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (uri != null) {
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (out != null) {
+                        out.write(bytes);
+                        out.flush();
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.clear();
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0);
+                    getContentResolver().update(uri, values, null, null);
+                }
+                Log.i(TAG, LOG_PREFIX + " saved image to MediaStore: " + uri);
+                return uri;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to save image to MediaStore", t);
+        }
+        return null;
     }
 
     private static String sha256Hex(byte[] input) {
