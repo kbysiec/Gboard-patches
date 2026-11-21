@@ -4,8 +4,10 @@ import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
+import android.provider.OpenableColumns;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -71,8 +73,45 @@ public final class WebClipboardFileProvider extends ContentProvider {
     }
 
     @Override
-    public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
+    public String[] getStreamTypes(Uri uri, String mimeTypeFilter) {
+        String mime = getType(uri);
+        if (mimeTypeFilter == null || mimeTypeFilter.equals("*/*") || mimeTypeFilter.startsWith("image/")) {
+            return new String[]{mime};
+        }
         return null;
+    }
+
+    @Override
+    public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
+        Context context = getContext();
+        if (context == null) {
+            return null;
+        }
+        String filename = uri.getLastPathSegment();
+        if (filename == null || filename.trim().isEmpty()) {
+            return null;
+        }
+        File file = getFile(context, filename);
+        if (!file.exists()) {
+            return null;
+        }
+
+        String[] cols = projection != null ? projection : new String[]{
+                OpenableColumns.DISPLAY_NAME,
+                OpenableColumns.SIZE
+        };
+        MatrixCursor cursor = new MatrixCursor(cols, 1);
+        MatrixCursor.RowBuilder row = cursor.newRow();
+        for (String col : cols) {
+            if (OpenableColumns.DISPLAY_NAME.equals(col)) {
+                row.add(col, file.getName());
+            } else if (OpenableColumns.SIZE.equals(col)) {
+                row.add(col, file.length());
+            } else {
+                row.add(col, null);
+            }
+        }
+        return cursor;
     }
 
     @Override

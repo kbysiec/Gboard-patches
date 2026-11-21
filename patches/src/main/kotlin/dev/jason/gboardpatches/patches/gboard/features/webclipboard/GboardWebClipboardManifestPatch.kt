@@ -119,7 +119,7 @@ internal fun applyGboardWebClipboardManifest(document: Document) {
         WEB_CLIPBOARD_FILE_PROVIDER_CLASS,
     ).apply {
         setManifestAndroidAttribute("authorities", packageName + WEB_CLIPBOARD_PROVIDER_SUFFIX)
-        setManifestAndroidAttribute("exported", "false")
+        setManifestAndroidAttribute("exported", "true")
         setManifestAndroidAttribute("grantUriPermissions", "true")
     }
 }

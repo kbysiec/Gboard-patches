@@ -1,6 +1,9 @@
 name: Manual Build MPP
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -39,11 +42,11 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.4.0
-          name: "v4.4.0 - Gboard Web Clipboard Image Sync"
+          tag_name: v4.4.1
+          name: "v4.4.1 - Gboard Web Clipboard Image Sync"
           body: "Release with bidirectional image sync for GboardWU and macOS."
           draft: false
           prerelease: false
-          files: patches/build/libs/patches-4.4.0.mpp
+          files: patches/build/libs/*.mpp
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
