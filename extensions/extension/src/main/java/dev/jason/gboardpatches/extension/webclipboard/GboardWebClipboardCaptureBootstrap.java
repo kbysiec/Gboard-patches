@@ -204,7 +204,15 @@ public final class GboardWebClipboardCaptureBootstrap {
             if (clipData == null || clipData.getItemCount() <= 0) {
                 return null;
             }
-            return clipData.getItemAt(0).coerceToText(context);
+            ClipData.Item item = clipData.getItemAt(0);
+            if (item == null) {
+                return null;
+            }
+            // Protect against binary image leaks: if the item has an image URI, NEVER coerce to text!
+            if (item.getUri() != null) {
+                return item.getText();
+            }
+            return item.coerceToText(context);
         } catch (Throwable ignored) {
             return null;
         }
