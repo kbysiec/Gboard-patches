@@ -8,7 +8,7 @@ jobs:
     name: Build Patches (.mpp)
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: read
     steps:
       - name: Checkout
@@ -35,3 +35,15 @@ jobs:
           name: gboard-patches-mpp
           path: patches/build/libs/*.mpp
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v4.4.0
+          name: "v4.4.0 - Gboard Web Clipboard Image Sync"
+          body: "Release with bidirectional image sync for GboardWU and macOS."
+          draft: false
+          prerelease: false
+          files: patches/build/libs/patches-4.4.0.mpp
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
