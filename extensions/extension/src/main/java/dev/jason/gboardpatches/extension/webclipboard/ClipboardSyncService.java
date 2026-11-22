@@ -16,6 +16,8 @@ import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.database.Cursor;
 import android.net.Uri;
+import android.net.nsd.NsdManager;
+import android.net.nsd.NsdServiceInfo;
 import android.os.Build;
 import android.os.Environment;
 import android.os.IBinder;
@@ -63,6 +65,8 @@ public final class ClipboardSyncService extends Service {
     private ClipboardManager serviceClipboardManager;
     private ClipboardManager.OnPrimaryClipChangedListener serviceClipboardListener;
     private boolean foregroundRefused;
+    private NsdManager nsdManager;
+    private NsdManager.RegistrationListener nsdRegistrationListener;
     private ClipboardSyncWebPortal webPortal;
     private int currentPortalPort;
     private boolean currentPairingRequired;
@@ -349,6 +353,7 @@ public final class ClipboardSyncService extends Service {
             currentLoopbackIngressToken = loopbackIngressToken;
             seedPortalFromCurrentClipboard(portal);
             WebClipboardTileController.markRuntimeActive(this, true);
+            registerNsdService(port, pairingRequired);
             Log.i(TAG, LOG_PREFIX + " startWebPortal success"
                     + " instance=" + describePortal(portal)
                     + ", port=" + port
@@ -375,6 +380,64 @@ public final class ClipboardSyncService extends Service {
         stopSelf();
     }
 
+    private void registerNsdService(int port, boolean pairingRequired) {
+        unregisterNsdService();
+        try {
+            nsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);
+            if (nsdManager == null) {
+                return;
+            }
+            NsdServiceInfo serviceInfo = new NsdServiceInfo();
+            String model = Build.MODEL != null ? Build.MODEL.replaceAll("[^a-zA-Z0-9 -]", "") : "Phone";
+            serviceInfo.setServiceName("Gboard (" + model.trim() + ")");
+            serviceInfo.setServiceType("_gboard-sync._tcp");
+            serviceInfo.setPort(port);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                serviceInfo.setAttribute("version", "4.6.0");
+                serviceInfo.setAttribute("pairing", pairingRequired ? "true" : "false");
+            }
+
+            nsdRegistrationListener = new NsdManager.RegistrationListener() {
+                @Override
+                public void onServiceRegistered(NsdServiceInfo registeredInfo) {
+                    Log.i(TAG, LOG_PREFIX + " NSD mDNS service registered: " + registeredInfo.getServiceName()
+                            + " port=" + registeredInfo.getPort());
+                }
+
+                @Override
+                public void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode) {
+                    Log.w(TAG, LOG_PREFIX + " NSD registration failed code=" + errorCode);
+                }
+
+                @Override
+                public void onServiceUnregistered(NsdServiceInfo arg0) {
+                    Log.i(TAG, LOG_PREFIX + " NSD service unregistered");
+                }
+
+                @Override
+                public void onUnregistrationFailed(NsdServiceInfo serviceInfo, int errorCode) {
+                    Log.w(TAG, LOG_PREFIX + " NSD unregistration failed code=" + errorCode);
+                }
+            };
+
+            nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, nsdRegistrationListener);
+        } catch (Throwable t) {
+            Log.w(TAG, LOG_PREFIX + " Failed to register NSD service", t);
+        }
+    }
+
+    private void unregisterNsdService() {
+        if (nsdManager != null && nsdRegistrationListener != null) {
+            try {
+                nsdManager.unregisterService(nsdRegistrationListener);
+                Log.i(TAG, LOG_PREFIX + " unregisterNsdService called");
+            } catch (Throwable t) {
+                Log.w(TAG, LOG_PREFIX + " Failed to unregister NSD service", t);
+            }
+            nsdRegistrationListener = null;
+        }
+    }
+
     private void stopWebPortal() {
         ClipboardSyncWebPortal portal = webPortal;
         Log.i(TAG, LOG_PREFIX + " stopWebPortal"
@@ -388,6 +451,7 @@ public final class ClipboardSyncService extends Service {
         currentPairingRequired = false;
         currentPairingCode = WebClipboardPreferences.DEFAULT_PAIRING_CODE;
         currentLoopbackIngressToken = WebClipboardPreferences.DEFAULT_LOOPBACK_INGRESS_TOKEN;
+        unregisterNsdService();
         if (portal != null) {
             portal.stop();
         }

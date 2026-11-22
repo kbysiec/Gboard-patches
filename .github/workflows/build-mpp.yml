@@ -42,9 +42,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.5.0
-          name: "v4.5.0 - Gboard Web Clipboard File & Image Sync"
-          body: "Release with full bidirectional file and image sync for GboardWU and macOS."
+          tag_name: v4.6.0
+          name: "v4.6.0 - Gboard Web Clipboard mDNS Bonjour Auto-Discovery"
+          body: "Release with native mDNS / Bonjour advertising (_gboard-sync._tcp) for zero-latency network discovery."
           draft: false
           prerelease: false
           files: patches/build/libs/*.mpp
