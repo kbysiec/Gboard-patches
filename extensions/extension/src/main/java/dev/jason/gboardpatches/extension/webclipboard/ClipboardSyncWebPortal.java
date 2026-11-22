@@ -339,15 +339,44 @@ public final class ClipboardSyncWebPortal {
         } catch (Throwable ignored) {
             return;
         }
-        String frame = "event: clipboard\r\n"
+        String plainFrame = "event: clipboard\r\n"
                 + "data: " + payload.toString() + "\r\n\r\n";
+        String e2eFrame = null;
         List<EventClient> clients = snapshotEventClients();
         logInfo(LOG_PREFIX + " portal published clipboard"
                 + " instance=" + portalInstanceId
                 + " source=" + source
                 + " len=" + text.length()
                 + ", clients=" + clients.size());
-        List<EventClient> failedClients = writeFrameToClients(clients, frame, "clipboard");
+        List<EventClient> failedClients = new ArrayList<>();
+        for (EventClient client : clients) {
+            String frameToSend = plainFrame;
+            if (client.e2e) {
+                if (e2eFrame == null) {
+                    JSONObject e2ePayload = new JSONObject();
+                    try {
+                        String encText = ClipboardSyncE2ECrypto.encrypt(text, securityConfig.pairingCode);
+                        e2ePayload.put("text", encText);
+                        e2ePayload.put("updatedAtMs", updatedAtMs);
+                        e2ePayload.put("source", source);
+                        if (senderLabel != null && !senderLabel.isBlank()) {
+                            e2ePayload.put("senderLabel", senderLabel);
+                        }
+                        if (clientId != null && !clientId.isBlank()) {
+                            e2ePayload.put("clientId", clientId);
+                        }
+                        e2eFrame = "event: clipboard\r\n"
+                                + "data: " + e2ePayload.toString() + "\r\n\r\n";
+                    } catch (Throwable ignored) {
+                        e2eFrame = plainFrame;
+                    }
+                }
+                frameToSend = e2eFrame;
+            }
+            if (!writeClientFrame(client, frameToSend, "clipboard")) {
+                failedClients.add(client);
+            }
+        }
         removeFailedEventClients(failedClients);
     }
 
@@ -562,6 +591,10 @@ public final class ClipboardSyncWebPortal {
                         contentTypeForPath(request.path), null);
                 return;
             }
+            if ("GET".equals(request.method) && "/pair".equals(request.path)) {
+                handlePairPageGet(socket, request);
+                return;
+            }
             if ("GET".equals(request.method) && "/status".equals(request.path)) {
                 writeResponse(socket, 200, "OK", "application/json; charset=utf-8",
                         buildStatusJson(request, socket));
@@ -573,12 +606,18 @@ public final class ClipboardSyncWebPortal {
                 return;
             }
             if ("GET".equals(request.method) && "/events".equals(request.path)) {
-                attachEventClient(socket, request.header("user-agent"), request.query("clientId"));
+                boolean e2e = "1".equals(request.query("e2e"))
+                        || "true".equalsIgnoreCase(request.query("e2e"))
+                        || (request.query("clientId") != null && request.query("clientId").startsWith("macos-"));
+                attachEventClient(socket, request.header("user-agent"), request.query("clientId"), e2e);
                 return;
             }
             if ("GET".equals(request.method) && "/state".equals(request.path)) {
+                boolean e2e = "1".equals(request.query("e2e"))
+                        || "true".equalsIgnoreCase(request.query("e2e"))
+                        || (request.query("clientId") != null && request.query("clientId").startsWith("macos-"));
                 writeResponse(socket, 200, "OK", "application/json; charset=utf-8",
-                        buildLatestStateJson());
+                        buildLatestStateJson(e2e));
                 return;
             }
             if ("GET".equals(request.method) && "/clipboard/image".equals(request.path)) {
@@ -774,12 +813,13 @@ public final class ClipboardSyncWebPortal {
     }
 
     private void handleClipboardPost(Socket socket, String body) throws Exception {
-        String text = extractText(body);
-        if (!hasClipboardText(text)) {
+        String rawText = extractText(body);
+        if (!hasClipboardText(rawText)) {
             writeResponse(socket, 400, "Bad Request", "application/json; charset=utf-8",
                     "{\"ok\":false,\"error\":\"empty_text\"}");
             return;
         }
+        String text = ClipboardSyncE2ECrypto.decrypt(rawText, securityConfig.pairingCode);
         String clientId = sanitizeClientId(extractClientId(body));
         String messageId = sanitizeMessageId(extractField(body, "messageId"));
         try {
@@ -981,6 +1021,160 @@ public final class ClipboardSyncWebPortal {
         return now;
     }
 
+    private void handlePairPageGet(Socket socket, Request request) throws Exception {
+        String hostHeader = request.header("host");
+        String hostIp = "127.0.0.1";
+        int port = getHttpsPort() > 0 ? getHttpsPort() : getPort();
+        boolean isHttps = getHttpsPort() > 0;
+        if (hostHeader != null && !hostHeader.isBlank()) {
+            if (hostHeader.contains(":")) {
+                String[] parts = hostHeader.split(":");
+                hostIp = parts[0];
+                try {
+                    port = Integer.parseInt(parts[1]);
+                } catch (Throwable ignored) {}
+            } else {
+                hostIp = hostHeader;
+            }
+        } else if (socket.getLocalAddress() != null) {
+            hostIp = socket.getLocalAddress().getHostAddress();
+        }
+
+        String pin = securityConfig.pairingCode;
+        String pairSchemeUrl = "gboard-sync://pair?code=" + pin + "&host=" + hostIp + "&port=" + port + "&https=" + (isHttps ? "1" : "0");
+        String html = buildPairPageHtml(hostIp, port, isHttps, pin, pairSchemeUrl);
+        writeResponse(socket, 200, "OK", "text/html; charset=utf-8", html);
+    }
+
+    private String buildPairPageHtml(String host, int port, boolean isHttps, String pin, String pairUrl) {
+        return "<!doctype html>\n"
+                + "<html lang=\"pl\">\n"
+                + "<head>\n"
+                + "  <meta charset=\"utf-8\">\n"
+                + "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+                + "  <title>Gboard Sync - Parowanie</title>\n"
+                + "  <style>\n"
+                + "    :root {\n"
+                + "      color-scheme: light dark;\n"
+                + "      --bg: #0f172a;\n"
+                + "      --card-bg: #1e293b;\n"
+                + "      --text: #f8fafc;\n"
+                + "      --muted: #94a3b8;\n"
+                + "      --accent: #3b82f6;\n"
+                + "      --accent-hover: #2563eb;\n"
+                + "      --green: #10b981;\n"
+                + "      --border: #334155;\n"
+                + "    }\n"
+                + "    @media (prefers-color-scheme: light) {\n"
+                + "      :root {\n"
+                + "        --bg: #f8fafc;\n"
+                + "        --card-bg: #ffffff;\n"
+                + "        --text: #0f172a;\n"
+                + "        --muted: #64748b;\n"
+                + "        --accent: #2563eb;\n"
+                + "        --accent-hover: #1d4ed8;\n"
+                + "        --green: #059669;\n"
+                + "        --border: #e2e8f0;\n"
+                + "      }\n"
+                + "    }\n"
+                + "    body {\n"
+                + "      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;\n"
+                + "      background: var(--bg);\n"
+                + "      color: var(--text);\n"
+                + "      display: flex;\n"
+                + "      align-items: center;\n"
+                + "      justify-content: center;\n"
+                + "      min-height: 100vh;\n"
+                + "      margin: 0;\n"
+                + "      padding: 20px;\n"
+                + "      box-sizing: border-box;\n"
+                + "    }\n"
+                + "    .card {\n"
+                + "      background: var(--card-bg);\n"
+                + "      border: 1px solid var(--border);\n"
+                + "      border-radius: 20px;\n"
+                + "      padding: 32px;\n"
+                + "      max-width: 440px;\n"
+                + "      width: 100%;\n"
+                + "      text-align: center;\n"
+                + "      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);\n"
+                + "    }\n"
+                + "    h1 { font-size: 24px; margin: 0 0 8px; font-weight: 700; }\n"
+                + "    .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 20px; }\n"
+                + "    .badges { display: flex; gap: 8px; justify-content: center; margin-bottom: 24px; flex-wrap: wrap; }\n"
+                + "    .badge {\n"
+                + "      display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600;\n"
+                + "      padding: 4px 10px; border-radius: 9999px; background: rgba(59, 130, 246, 0.15); color: var(--accent);\n"
+                + "    }\n"
+                + "    .badge-sec { background: rgba(16, 185, 129, 0.15); color: var(--green); }\n"
+                + "    .pin-box {\n"
+                + "      background: var(--bg); border: 2px dashed var(--accent); border-radius: 14px; padding: 18px; margin-bottom: 22px;\n"
+                + "    }\n"
+                + "    .pin-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 6px; }\n"
+                + "    .pin-value {\n"
+                + "      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\n"
+                + "      font-size: 38px; font-weight: 800; letter-spacing: 8px; color: var(--accent);\n"
+                + "    }\n"
+                + "    .btn {\n"
+                + "      display: block; width: 100%; background: var(--accent); color: #ffffff;\n"
+                + "      padding: 14px 20px; border-radius: 12px; text-decoration: none; font-weight: 600;\n"
+                + "      font-size: 15px; transition: background 0.2s; box-sizing: border-box; margin-bottom: 20px;\n"
+                + "    }\n"
+                + "    .btn:hover { background: var(--accent-hover); }\n"
+                + "    .qr-container {\n"
+                + "      margin: 10px auto 20px; padding: 14px; background: #ffffff; border-radius: 14px; width: fit-content;\n"
+                + "      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);\n"
+                + "    }\n"
+                + "    .instructions {\n"
+                + "      font-size: 13px; color: var(--muted); line-height: 1.6; text-align: left; margin-top: 20px;\n"
+                + "      padding-top: 18px; border-top: 1px solid var(--border);\n"
+                + "    }\n"
+                + "    .instructions ol { margin: 8px 0 0; padding-left: 20px; }\n"
+                + "  </style>\n"
+                + "</head>\n"
+                + "<body>\n"
+                + "  <div class=\"card\">\n"
+                + "    <h1>📱 Gboard Sync</h1>\n"
+                + "    <div class=\"subtitle\">Bezpieczne parowanie z aplikacją macOS</div>\n"
+                + "    <div class=\"badges\">\n"
+                + "      <span class=\"badge\">🔒 TLS / HTTPS (" + port + ")</span>\n"
+                + "      <span class=\"badge badge-sec\">🔑 E2E AES-256-GCM</span>\n"
+                + "    </div>\n"
+                + "    <div class=\"pin-box\">\n"
+                + "      <div class=\"pin-label\">Kod PIN parowania</div>\n"
+                + "      <div class=\"pin-value\">" + pin + "</div>\n"
+                + "    </div>\n"
+                + "    <a href=\"" + pairUrl + "\" class=\"btn\">⚡ Otwórz i sparuj w GboardSync</a>\n"
+                + "    <div class=\"qr-container\">\n"
+                + "      <canvas id=\"qr-canvas\" width=\"180\" height=\"180\"></canvas>\n"
+                + "    </div>\n"
+                + "    <div class=\"instructions\">\n"
+                + "      <strong>Jak sparować:</strong>\n"
+                + "      <ol>\n"
+                + "        <li><strong>Na Macu:</strong> Kliknij niebieski przycisk powyżej lub wpisz kod PIN w aplikacji w pasku menu.</li>\n"
+                + "        <li><strong>Z aparatu:</strong> Zeskanuj kod QR aparatem Maca, aby natychmiast otworzyć aplikację.</li>\n"
+                + "        <li>Po pierwszym sparowaniu Mac łączy się automatycznie przez Bonjour w ułamku sekundy.</li>\n"
+                + "      </ol>\n"
+                + "    </div>\n"
+                + "  </div>\n"
+                + "  <script>\n"
+                + "    (function(){\n"
+                + "      var text = " + JSONObject.quote(pairUrl) + ";\n"
+                + "      var canvas = document.getElementById('qr-canvas');\n"
+                + "      var ctx = canvas.getContext('2d');\n"
+                + "      // Fallback visual QR-box representation with link\n"
+                + "      ctx.fillStyle = '#ffffff';\n"
+                + "      ctx.fillRect(0, 0, 180, 180);\n"
+                + "      var img = new Image();\n"
+                + "      img.crossOrigin = 'anonymous';\n"
+                + "      img.onload = function() { ctx.drawImage(img, 0, 0, 180, 180); };\n"
+                + "      img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(text);\n"
+                + "    })();\n"
+                + "  </script>\n"
+                + "</body>\n"
+                + "</html>\n";
+    }
+
     private void handleKickClientPost(Socket socket, String body) throws Exception {
         String clientId = extractField(body, "id");
         boolean kicked = kickClient(clientId);
@@ -1016,9 +1210,17 @@ public final class ClipboardSyncWebPortal {
     }
 
     private String buildLatestStateJson() {
+        return buildLatestStateJson(false);
+    }
+
+    private String buildLatestStateJson(boolean e2e) {
         JSONObject payload = new JSONObject();
         try {
-            payload.put("text", latestPhoneClipboardText == null ? "" : latestPhoneClipboardText);
+            String text = latestPhoneClipboardText == null ? "" : latestPhoneClipboardText;
+            if (e2e && !text.isEmpty()) {
+                text = ClipboardSyncE2ECrypto.encrypt(text, securityConfig.pairingCode);
+            }
+            payload.put("text", text);
             payload.put("updatedAtMs", Math.max(0L, latestPhoneClipboardAtMs));
             if (latestPhoneImageBytes != null && latestPhoneImageBytes.length > 0) {
                 payload.put("hasImage", true);
@@ -1292,6 +1494,11 @@ public final class ClipboardSyncWebPortal {
 
     private void attachEventClient(Socket socket, String userAgent, String requestedClientId)
             throws Exception {
+        attachEventClient(socket, userAgent, requestedClientId, false);
+    }
+
+    private void attachEventClient(Socket socket, String userAgent, String requestedClientId, boolean e2e)
+            throws Exception {
         socket.setSoTimeout(0);
         socket.setKeepAlive(true);
         socket.setTcpNoDelay(true);
@@ -1318,7 +1525,8 @@ public final class ClipboardSyncWebPortal {
                 userAgent == null ? "" : userAgent,
                 System.currentTimeMillis(),
                 socket,
-                writer);
+                writer,
+                e2e);
         if (!writeClientFrame(client, ": connected\r\nretry: 1500\r\n\r\n", "connected")) {
             client.close();
             return;
@@ -1603,11 +1811,12 @@ public final class ClipboardSyncWebPortal {
         private final long connectedAtMs;
         private final Socket socket;
         private final BufferedWriter writer;
+        private final boolean e2e;
         private final Object writeLock = new Object();
         private volatile String lastWriteErrorClass = "";
 
         EventClient(String id, String address, String browser, String agent, long connectedAtMs,
-                Socket socket, BufferedWriter writer) {
+                Socket socket, BufferedWriter writer, boolean e2e) {
             this.id = id;
             this.address = address;
             this.browser = browser;
@@ -1615,6 +1824,7 @@ public final class ClipboardSyncWebPortal {
             this.connectedAtMs = connectedAtMs;
             this.socket = socket;
             this.writer = writer;
+            this.e2e = e2e;
         }
 
         boolean write(String frame) {
