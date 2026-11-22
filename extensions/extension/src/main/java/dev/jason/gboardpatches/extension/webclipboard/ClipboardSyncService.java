@@ -1,5 +1,6 @@
 package dev.jason.gboardpatches.extension.webclipboard;
 
+import android.annotation.TargetApi;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -694,17 +695,19 @@ public final class ClipboardSyncService extends Service {
         }
     }
 
+    @TargetApi(Build.VERSION_CODES.Q)
     private Uri saveFileToDownloads(byte[] bytes, String filename, String mimeType) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return null;
+        }
         try {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Downloads.DISPLAY_NAME, filename);
             if (mimeType != null && !mimeType.isBlank()) {
                 values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/WebClipboard");
-                values.put(MediaStore.Downloads.IS_PENDING, 1);
-            }
+            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/WebClipboard");
+            values.put(MediaStore.Downloads.IS_PENDING, 1);
             Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
             if (uri != null) {
                 try (OutputStream out = getContentResolver().openOutputStream(uri)) {
@@ -713,11 +716,9 @@ public final class ClipboardSyncService extends Service {
                         out.flush();
                     }
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    values.clear();
-                    values.put(MediaStore.Downloads.IS_PENDING, 0);
-                    getContentResolver().update(uri, values, null, null);
-                }
+                values.clear();
+                values.put(MediaStore.Downloads.IS_PENDING, 0);
+                getContentResolver().update(uri, values, null, null);
                 Log.i(TAG, LOG_PREFIX + " saved file to Downloads MediaStore: " + uri);
                 return uri;
             }
