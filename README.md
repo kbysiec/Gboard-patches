@@ -40,7 +40,13 @@ Features designed and built by this project rather than simply unlocking an exis
 <details>
   <summary><code>Web Clipboard</code></summary>
 
-  Hosts a phone-powered Web Clipboard portal that lets desktop browsers sync with Gboard over the same LAN, with a pairing code gate and an optional Quick Settings Tile.
+  Hosts a phone-powered Web Clipboard portal that lets desktop browsers and native desktop agents sync with Gboard over the same LAN, with a pairing code gate and an optional Quick Settings Tile.
+
+  **Supported Synchronization Capabilities:**
+  * **Text Clipboard**: Instant bidirectional synchronization with echo suppression.
+  * **Images & Screenshots**: Direct upload into Android `MediaStore.Images` and `WebClipboardFileProvider`, enabling native Gboard floating suggestion chips and cross-app image pasting.
+  * **Files (PDF, ZIP, DOCX, Media, etc.)**: Bidirectional file streaming; received files on Android are saved to `MediaStore.Downloads` (`Downloads/WebClipboard`) with a system notification (`ACTION_VIEW`) to view or open immediately.
+  * **Desktop Companion**: Native macOS Menu Bar agent ([gboard-raycast-sync](https://github.com/kbysiec/wugboard-patched-clipboard-mac-sync)) with Raycast Clipboard History integration and LAN auto-discovery.
 
   Preview:
 
