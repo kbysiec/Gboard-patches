@@ -42,9 +42,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.6.0
-          name: "v4.6.0 - Gboard Web Clipboard mDNS Bonjour Auto-Discovery"
-          body: "Release with native mDNS / Bonjour advertising (_gboard-sync._tcp) for zero-latency network discovery."
+          tag_name: v4.6.1
+          name: "v4.6.1 - Gboard Web Clipboard TLS/HTTPS & Bonjour Discovery"
+          body: "Release with default native TLS/HTTPS port 8081 advertising over mDNS/Bonjour for secure local sync."
           draft: false
           prerelease: false
           files: patches/build/libs/*.mpp

@@ -387,14 +387,18 @@ public final class ClipboardSyncService extends Service {
             if (nsdManager == null) {
                 return;
             }
+            int httpsPort = ClipboardSyncHttpsSocketFactory.defaultHttpsPortFor(port);
             NsdServiceInfo serviceInfo = new NsdServiceInfo();
             String model = Build.MODEL != null ? Build.MODEL.replaceAll("[^a-zA-Z0-9 -]", "") : "Phone";
             serviceInfo.setServiceName("Gboard (" + model.trim() + ")");
             serviceInfo.setServiceType("_gboard-sync._tcp");
-            serviceInfo.setPort(port);
+            serviceInfo.setPort(httpsPort > 0 ? httpsPort : port);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                serviceInfo.setAttribute("version", "4.6.0");
+                serviceInfo.setAttribute("version", "4.6.1");
                 serviceInfo.setAttribute("pairing", pairingRequired ? "true" : "false");
+                serviceInfo.setAttribute("tls", "true");
+                serviceInfo.setAttribute("httpsPort", String.valueOf(httpsPort));
+                serviceInfo.setAttribute("httpPort", String.valueOf(port));
             }
 
             nsdRegistrationListener = new NsdManager.RegistrationListener() {
