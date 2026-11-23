@@ -6,18 +6,21 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.database.Cursor;
 import android.net.Uri;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Environment;
 import android.os.IBinder;
@@ -25,6 +28,8 @@ import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.widget.Toast;
+
+import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -78,6 +83,7 @@ public final class ClipboardSyncService extends Service {
     private final WebClipboardEchoSuppressor webClipboardEchoSuppressor =
             new WebClipboardEchoSuppressor(DUPLICATE_SUPPRESSION_WINDOW_MS);
     private final ExecutorService clipboardPublishExecutor = Executors.newSingleThreadExecutor();
+    private BroadcastReceiver batteryReceiver;
 
     public static void startOrUpdate(Context context) {
         if (context == null || !WebClipboardLocalNetworkPermission.isGranted(context)) {
@@ -337,6 +343,10 @@ public final class ClipboardSyncService extends Service {
                     public void applyDesktopFile(byte[] fileBytes, String filename, String mimeType) {
                         applyWebFileToPhone(fileBytes, filename, mimeType);
                     }
+                    @Override
+                    public JSONObject getBatteryStatus() {
+                        return readBatteryStatus();
+                    }
                 },
                 ClipboardSyncWebPortal.WebAssets.from(this),
                 new ClipboardSyncWebPortal.SecurityConfig(
@@ -354,6 +364,7 @@ public final class ClipboardSyncService extends Service {
             seedPortalFromCurrentClipboard(portal);
             WebClipboardTileController.markRuntimeActive(this, true);
             registerNsdService(port, pairingRequired);
+            registerBatteryReceiver();
             Log.i(TAG, LOG_PREFIX + " startWebPortal success"
                     + " instance=" + describePortal(portal)
                     + ", port=" + port
@@ -456,6 +467,7 @@ public final class ClipboardSyncService extends Service {
         currentPairingCode = WebClipboardPreferences.DEFAULT_PAIRING_CODE;
         currentLoopbackIngressToken = WebClipboardPreferences.DEFAULT_LOOPBACK_INGRESS_TOKEN;
         unregisterNsdService();
+        unregisterBatteryReceiver();
         if (portal != null) {
             portal.stop();
         }
@@ -735,6 +747,7 @@ public final class ClipboardSyncService extends Service {
             return;
         }
         try {
+            updateFileProgressNotification(filename, 0, true);
             String hash = sha256Hex(bytes);
             webClipboardEchoSuppressor.markWebApplied("FILE_HASH:" + hash, SystemClock.elapsedRealtime());
 
@@ -833,6 +846,79 @@ public final class ClipboardSyncService extends Service {
             nm.notify(NOTIFICATION_ID + 1, notification);
         } catch (Throwable t) {
             Log.w(TAG, "Failed to show file notification", t);
+        }
+    }
+
+    private void updateFileProgressNotification(String filename, int progress, boolean indeterminate) {
+        try {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm == null) return;
+            ensureNotificationChannel();
+
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, NOTIFICATION_CHANNEL_ID);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            Notification notification = builder
+                    .setSmallIcon(android.R.drawable.stat_sys_download)
+                    .setContentTitle("Pobieranie pliku z Maca...")
+                    .setContentText(filename)
+                    .setProgress(100, progress, indeterminate)
+                    .setOngoing(true)
+                    .build();
+
+            nm.notify(NOTIFICATION_ID + 1, notification);
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to show file progress notification", t);
+        }
+    }
+
+    private JSONObject readBatteryStatus() {
+        try {
+            Intent intent = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (intent == null) return null;
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            boolean charging = (status == BatteryManager.BATTERY_STATUS_CHARGING
+                    || status == BatteryManager.BATTERY_STATUS_FULL);
+            int pct = (level >= 0 && scale > 0) ? (int) ((level / (float) scale) * 100) : -1;
+            JSONObject b = new JSONObject();
+            b.put("level", pct);
+            b.put("charging", charging);
+            return b;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private void registerBatteryReceiver() {
+        if (batteryReceiver != null) return;
+        batteryReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent != null && Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction())) {
+                    ClipboardSyncWebPortal portal = activePortal;
+                    if (portal != null) {
+                        portal.broadcastBattery(readBatteryStatus());
+                    }
+                }
+            }
+        };
+        try {
+            registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        } catch (Throwable ignored) {}
+    }
+
+    private void unregisterBatteryReceiver() {
+        if (batteryReceiver != null) {
+            try {
+                unregisterReceiver(batteryReceiver);
+            } catch (Throwable ignored) {}
+            batteryReceiver = null;
         }
     }
 
