@@ -103,7 +103,6 @@ public final class ClipboardSyncWebPortal {
         void applyDesktopClipboard(String text);
         default void applyDesktopImage(byte[] imageBytes, String mimeType) {}
         default void applyDesktopFile(byte[] fileBytes, String filename, String mimeType) {}
-        default JSONObject getBatteryStatus() { return null; }
     }
 
     interface WebAssets {
@@ -883,11 +882,6 @@ public final class ClipboardSyncWebPortal {
         removeFailedEventClients(failedClients);
     }
 
-    public void broadcastBattery(JSONObject battery) {
-        if (battery == null) return;
-        broadcastEvent("battery", battery.toString());
-    }
-
     private long publishWebImage(byte[] bytes, String mimeType, String senderLabel, String clientId) {
         long now = System.currentTimeMillis();
         latestPhoneImageBytes = bytes;
@@ -1281,10 +1275,6 @@ public final class ClipboardSyncWebPortal {
                 if (!loopbackProof.isEmpty()) {
                     payload.put(ClipboardSyncLoopbackAuth.PROOF_FIELD, loopbackProof);
                 }
-                JSONObject battery = bridge.getBatteryStatus();
-                if (battery != null) {
-                    payload.put("battery", battery);
-                }
             } catch (Throwable ignored) {
                 return "{\"ok\":false,\"pairingRequired\":true,\"pairingVerified\":false,\"codeLength\":4,\"clients\":[]}";
             }
@@ -1546,10 +1536,6 @@ public final class ClipboardSyncWebPortal {
                 "meta")) {
             client.close();
             return;
-        }
-        JSONObject battery = bridge.getBatteryStatus();
-        if (battery != null) {
-            writeClientFrame(client, buildSseFrame("battery", battery.toString()), "battery");
         }
         List<EventClient> replacedClients;
         int clientCount;
