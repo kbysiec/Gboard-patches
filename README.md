@@ -45,8 +45,10 @@ Features designed and built by this project rather than simply unlocking an exis
   **Supported Synchronization Capabilities:**
   * **Text Clipboard**: Instant bidirectional synchronization with echo suppression.
   * **Images & Screenshots**: Direct upload into Android `MediaStore.Images` and `WebClipboardFileProvider`, enabling native Gboard floating suggestion chips and cross-app image pasting.
-  * **Files (PDF, ZIP, DOCX, Media, etc.)**: Bidirectional file streaming; received files on Android are saved to `MediaStore.Downloads` (`Downloads/WebClipboard`) with a system notification (`ACTION_VIEW`) to view or open immediately.
-  * **Desktop Companion**: Native macOS Menu Bar agent ([gboard-raycast-sync](https://github.com/kbysiec/wugboard-patched-clipboard-mac-sync)) with Raycast Clipboard History integration and LAN auto-discovery.
+  * **Files (PDF, ZIP, DOCX, Media, etc.)**: Bidirectional file streaming; received files on Android are saved to `MediaStore.Downloads` (`Downloads/WebClipboard`) with progress indicator and a system notification (`ACTION_VIEW`) to view or open immediately.
+  * **End-to-End Security & TLS**: Built-in TLS/HTTPS encryption on port 8081 with on-the-fly certificate generation and 4-digit PIN pairing gate.
+  * **mDNS / Bonjour Discovery**: Broadcasts service via `NsdManager` (`_gboard-sync._tcp.local.`) for instant zero-configuration detection by desktop agents.
+  * **Desktop Companion**: Native macOS Menu Bar agent ([gboard-raycast-sync](https://github.com/kbysiec/wugboard-patched-clipboard-mac-sync)) with Raycast Clipboard History integration, sleep/wake resilience, and Hotspot auto-discovery.
 
   Preview:
 
